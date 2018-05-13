@@ -108,6 +108,10 @@ type BuildOptions struct {
 	CommonBuildOpts *buildah.CommonBuildOptions
 	// DefaultMountsFilePath is the file path holding the mounts to be mounted in "host-path:container-path" format
 	DefaultMountsFilePath string
+	// Parallel denotes that the build should be distributed to worker nodes for completion
+	Parallel bool
+	//Workers lists the worker nodes to which parallel builds should be distributed
+	Workers []string
 }
 
 // Executor is a buildah-based implementation of the imagebuilder.Executor
@@ -141,6 +145,10 @@ type Executor struct {
 	reportWriter                   io.Writer
 	commonBuildOptions             *buildah.CommonBuildOptions
 	defaultMountsFilePath          string
+}
+
+func (b *Executor) Store() storage.Store {
+	return b.store
 }
 
 // Preserve informs the executor that from this point on, it needs to ensure
@@ -425,6 +433,7 @@ func (b *Executor) UnrecognizedInstruction(step *imagebuilder.Step) error {
 
 // NewExecutor creates a new instance of the imagebuilder.Executor interface.
 func NewExecutor(store storage.Store, options BuildOptions) (*Executor, error) {
+	fmt.Printf("%+v\n", options)
 	exec := Executor{
 		store:                          store,
 		contextDir:                     options.ContextDirectory,
@@ -467,6 +476,10 @@ func NewExecutor(store storage.Store, options BuildOptions) (*Executor, error) {
 		}
 	}
 	return &exec, nil
+}
+
+func (b *Executor) Output() string {
+	return b.output
 }
 
 // Prepare creates a working container based on specified image, or if one
@@ -566,12 +579,14 @@ func (b *Executor) Delete() (err error) {
 
 // Execute runs each of the steps in the parsed tree, in turn.
 func (b *Executor) Execute(ib *imagebuilder.Builder, node *parser.Node) error {
+	fmt.Println("Executing...")
 	for i, node := range node.Children {
 		step := ib.Step()
+		fmt.Printf("\nNew step: %+v\n", step)
 		if err := step.Resolve(node); err != nil {
 			return errors.Wrapf(err, "error resolving step %+v", *node)
 		}
-		logrus.Debugf("Parsed Step: %+v", *step)
+		fmt.Printf("Resolved step: %+v\n", step)
 		if !b.quiet {
 			b.log("%s", step.Original)
 		}
@@ -723,10 +738,25 @@ func BuildDockerfiles(store storage.Store, options BuildOptions, dockerfile ...s
 		}
 		nodes = append(nodes, parsed)
 	}
+
 	builder := imagebuilder.NewBuilder(options.Args)
 	exec, err := NewExecutor(store, options)
 	if err != nil {
 		return errors.Wrapf(err, "error creating build executor")
 	}
+
+	if options.Parallel {
+		pb := &ParallelBuilder{
+			Builder:  builder,
+			Options:  options,
+			From:     "",
+			Node:     nil,
+			Diff:     nil,
+			executor: exec,
+		}
+		pb.SetWorkers(options.Workers)
+		return pb.BuildParallel(builder, nodes)
+	}
+
 	return exec.Build(builder, nodes)
 }

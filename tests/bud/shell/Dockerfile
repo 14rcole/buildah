@@ -1,3 +1,2 @@
-FROM alpine
-SHELL [ "/bin/sh", "-c" ]
-
+FROM ubuntu:latest
+RUN touch /test.txt

@@ -120,6 +120,51 @@ func (b *Builder) Commit(dest types.ImageReference, options CommitOptions) error
 	return nil
 }
 
+func (b *Builder) Append(dest types.ImageReference, options CommitOptions) error {
+	policy, err := signature.DefaultPolicy(getSystemContext(options.SystemContext, options.SignaturePolicyPath))
+	if err != nil {
+		return errors.Wrapf(err, "error obtaining default signature policy")
+	}
+	policyContext, err := signature.NewPolicyContext(policy)
+	if err != nil {
+		return errors.Wrapf(err, "error creating new signature policy context")
+	}
+	defer func() {
+		if err2 := policyContext.Destroy(); err2 != nil {
+			logrus.Debugf("error destroying signature policy context: %v", err2)
+		}
+	}()
+	// Check if we're keeping everything in local storage.  If so, we can take certain shortcuts.
+	_, destIsStorage := dest.Transport().(is.StoreTransport)
+	exporting := !destIsStorage
+	src, err := b.makeImageRef(options.PreferredManifestType, exporting, options.Compression, options.HistoryTimestamp)
+	if err != nil {
+		return errors.Wrapf(err, "error computing layer digests and building metadata")
+	}
+	// "Copy" our image to where it needs to be.
+	err = cp.Image(policyContext, dest, src, getCopyOptions(options.ReportWriter, nil, options.SystemContext, ""))
+	if err != nil {
+		return errors.Wrapf(err, "error copying layers and metadata")
+	}
+	if len(options.AdditionalTags) > 0 {
+		switch dest.Transport().Name() {
+		case is.Transport.Name():
+			img, err := is.Transport.GetStoreImage(b.store, dest)
+			if err != nil {
+				return errors.Wrapf(err, "error locating just-written image %q", transports.ImageName(dest))
+			}
+			err = util.AddImageNames(b.store, img, options.AdditionalTags)
+			if err != nil {
+				return errors.Wrapf(err, "error setting image names to %v", append(img.Names, options.AdditionalTags...))
+			}
+			logrus.Debugf("assigned names %v to image %q", img.Names, img.ID)
+		default:
+			logrus.Warnf("don't know how to add tags to images stored in %q transport", dest.Transport().Name())
+		}
+	}
+	return nil
+}
+
 // Push copies the contents of the image to a new location.
 func Push(image string, dest types.ImageReference, options PushOptions) error {
 	systemContext := getSystemContext(options.SystemContext, options.SignaturePolicyPath)

@@ -356,3 +356,7 @@ func (b *Builder) Save() error {
 	}
 	return ioutils.AtomicWriteFile(filepath.Join(cdir, stateFile), buildstate, 0600)
 }
+
+func (b *Builder) Store() storage.Store {
+	return b.store
+}

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +42,10 @@ var (
 			Name:  "format",
 			Usage: "`format` of the built image's manifest and metadata",
 		},
+		cli.BoolFlag{
+			Name:  "parallel",
+			Usage: "sends build instructions to worker nodes.  If --workers is not specified, localhost is assumed to be the only worker",
+		},
 		cli.BoolTFlag{
 			Name:  "pull",
 			Usage: "pull the image if not present",
@@ -71,6 +78,10 @@ var (
 		cli.BoolTFlag{
 			Name:  "tls-verify",
 			Usage: "require HTTPS and verify certificates when accessing the registry",
+		},
+		cli.StringFlag{
+			Name:  "workers",
+			Usage: "the name of a line-separated list of worker nodes for parallel builds",
 		},
 	}
 
@@ -207,6 +218,37 @@ func budCmd(c *cli.Context) error {
 		return err
 	}
 
+	workers := []string{}
+	workersFile := c.String("workers")
+	if workersFile != "" {
+		wf, err := os.Open(workersFile)
+		if err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(wf)
+		scanner.Split(bufio.ScanLines)
+
+		for scanner.Scan() {
+			worker := scanner.Text()
+			fmt.Println("next worker: ", worker)
+			addr := net.ParseIP(worker)
+			if addr != nil {
+				workers = append(workers, worker)
+			} else {
+				hostname, err := net.LookupHost(worker)
+				if err != nil {
+					return errors.Wrapf(err, "could not resolve hostname or IP %q\n", worker)
+				} else if len(hostname) > 0 && hostname[0] == worker {
+					continue
+				} else {
+					return errors.Errorf("hostname or IP %q is not valid", worker)
+				}
+			}
+		}
+	} else {
+		workers = append(workers, "localhost")
+	}
+
 	options := imagebuildah.BuildOptions{
 		ContextDirectory:      contextDir,
 		PullPolicy:            pullPolicy,
@@ -222,6 +264,8 @@ func budCmd(c *cli.Context) error {
 		SystemContext:         systemContext,
 		CommonBuildOpts:       commonOpts,
 		DefaultMountsFilePath: c.GlobalString("default-mounts-file"),
+		Parallel:              c.Bool("parallel"),
+		Workers:               workers,
 	}
 
 	if !c.Bool("quiet") {
